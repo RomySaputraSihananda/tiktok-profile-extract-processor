@@ -27,10 +27,9 @@ import org.apache.nifi.processor.ProcessContext;
 import org.apache.nifi.processor.ProcessSession;
 import org.apache.nifi.processor.ProcessorInitializationContext;
 import org.apache.nifi.processor.Relationship;
-import org.apache.nifi.processor.io.OutputStreamCallback;           
+import org.apache.nifi.processor.io.OutputStreamCallback;
 
 import org.jsoup.Jsoup;
-import org.jsoup.nodes.Document;
 
 import okhttp3.OkHttpClient;
 import okhttp3.Request;
@@ -38,7 +37,6 @@ import okhttp3.Response;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.JsonMappingException;
-import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 
 import java.io.IOException;
@@ -47,41 +45,42 @@ import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashSet;
-import java.util.List;
+import java.util.List;  
 import java.util.Set;
 
 @Tags({"romys", "tiktok", "profile", "extract"})
-@CapabilityDescription("Provide a description")
+@CapabilityDescription("Provides TikTok user profile information.")
 public class TikTokUserExtractor extends AbstractProcessor {
     private OkHttpClient client = new OkHttpClient();
     private ObjectMapper objectMapper = new ObjectMapper();
 
     public static final PropertyDescriptor USERNAME = new PropertyDescriptor
         .Builder()
-        .name("username")       
+        .name("username")
         .displayName("Username")
         .description("Username of tiktok user")
         .addValidator(StandardValidators.NON_EMPTY_VALIDATOR)
-        .required(false)
         .build();
 
-    private static final Relationship REL_SUCCESS = new Relationship.Builder()
-        .name("success")
-        .description("Successfully processed data.")
+    private static final Relationship REL_SUCCESS = new Relationship
+        .Builder()
+        .name("success")        
+        .description("Successfully get user profile.")
         .build();
 
-    private static final Relationship REL_FAILURE = new Relationship.Builder()
+    private static final Relationship REL_FAILURE = new Relationship
+        .Builder()
         .name("failure")
-        .description("Failed to process data.")
+        .description("Failed to find user profile")
         .build();      
 
     private List<PropertyDescriptor> descriptors;
 
     private Set<Relationship> relationships;
-
-    // public static void main(String[] args) throws JsonMappingException, JsonProcessingException, IOException {
-    //     System.out.println(new TikTokUserExtractor().getUserProfile("fall.for.yo"));
-    // }
+    
+    public static void main(String[] args) throws JsonMappingException, JsonProcessingException, IOException {
+        System.out.println(new TikTokUserExtractor().getUserProfile("fall.for.yo"));    
+    }
 
     @Override
     protected void init(final ProcessorInitializationContext context) {
@@ -113,19 +112,35 @@ public class TikTokUserExtractor extends AbstractProcessor {
     @Override
     public void onTrigger(final ProcessContext context, final ProcessSession session) {
         FlowFile flowFile = session.get();
-        if ( flowFile == null ) return;
+        String username;
+        if (flowFile == null && !context.getProperty(USERNAME).isSet()) return;
 
         try {
-            final String username = context.getProperty(USERNAME).getValue();
-            String content = this.getUserProfile(username);
-            final FlowFile outFlowFile = session.write(flowFile, new OutputStreamCallback() {
-                @Override
-                public void process(OutputStream out) throws IOException {
-                    out.write(content.getBytes(StandardCharsets.UTF_8));
+            if (context.getProperty(USERNAME).isSet()) {
+                username = context.getProperty(USERNAME).getValue();
+            } else {
+                username = flowFile.getAttribute("username");
+                if (username == null || username.isEmpty()) {
+                    getLogger().error("No username specified and no 'username' attribute found on FlowFile");
+                    session.transfer(flowFile, REL_FAILURE);
+                    return;
                 }
-            });
+            }
 
-            session.transfer(outFlowFile, REL_SUCCESS);
+            String userProfile = this.getUserProfile(username);
+            
+            session.transfer(
+                session.write(
+                    session.putAttribute(flowFile, "user_detail", userProfile), 
+                    new OutputStreamCallback() {
+                        @Override
+                        public void process(OutputStream out) throws IOException {
+                            out.write(userProfile.getBytes(StandardCharsets.UTF_8));
+                        }
+                    }
+                ), 
+                REL_SUCCESS
+            );
         } catch (Exception e) {
             getLogger().error("Failed to process due to {}", new Object[]{e.getMessage()}, e);
             session.transfer(flowFile, REL_FAILURE);
@@ -133,21 +148,31 @@ public class TikTokUserExtractor extends AbstractProcessor {
     }
 
     private String parseData(String content) throws JsonMappingException, JsonProcessingException{
-        Document document = Jsoup.parse(content);
-        JsonNode jsonNode = this.objectMapper.readTree(
-            document.select("#__UNIVERSAL_DATA_FOR_REHYDRATION__").html()
-        );
-        return jsonNode.get("__DEFAULT_SCOPE__").get("webapp.user-detail").toString();
+        String jsonString = Jsoup
+            .parse(content)
+            .select("#__UNIVERSAL_DATA_FOR_REHYDRATION__")
+            .html();
+
+        return this.objectMapper
+            .readTree(jsonString)
+            .get("__DEFAULT_SCOPE__")
+            .get("webapp.user-detail")
+            .toString();
     }   
 
     public String getUserProfile(String username) throws JsonMappingException, JsonProcessingException, IOException{
-        Request request = new Request.Builder()
-            .url(
-                String.format("https://www.tiktok.com/@%s", username)
+        Response response = this.client
+            .newCall(
+                new Request.Builder()
+                .url(String.format("https://www.tiktok.com/@%s", username))
+                .build()
             )
-            .build();           
-    
-        Response response = this.client.newCall(request).execute();
-        return this.parseData(response.body().string());
-    }       
+            .execute();
+
+        return this.parseData(
+            response
+            .body()
+            .string()
+        );
+    }
 }

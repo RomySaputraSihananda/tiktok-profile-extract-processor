@@ -22,7 +22,7 @@ import org.junit.Before;
 import org.junit.Test;
 
 
-public class MyProcessorTest {
+public class TikTokUserExtractorTest {
 
     private TestRunner testRunner;
 
