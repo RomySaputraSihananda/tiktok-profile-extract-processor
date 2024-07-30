@@ -29,24 +29,27 @@ import org.apache.nifi.processor.ProcessorInitializationContext;
 import org.apache.nifi.processor.Relationship;
 import org.apache.nifi.processor.io.OutputStreamCallback;
 
-import org.jsoup.Jsoup;
-
-import okhttp3.OkHttpClient;
-import okhttp3.Request;
-import okhttp3.Response;
-
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.JsonMappingException;
+import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 
-import java.io.IOException;
-import java.io.OutputStream;
-import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashSet;
 import java.util.List;  
 import java.util.Set;
+
+import okhttp3.OkHttpClient;
+import okhttp3.Request;
+import okhttp3.Response;
+
+import java.io.IOException;
+import java.io.OutputStream;
+
+import java.nio.charset.StandardCharsets;
+
+import org.jsoup.Jsoup;
 
 @Tags({"romys", "tiktok", "profile", "extract"})
 @CapabilityDescription("Provides TikTok user profile information.")
@@ -78,8 +81,8 @@ public class TikTokUserExtractor extends AbstractProcessor {
 
     private Set<Relationship> relationships;
     
-    public static void main(String[] args) throws JsonMappingException, JsonProcessingException, IOException {
-        System.out.println(new TikTokUserExtractor().getUserProfile("fall.for.yo"));    
+    public static void main(String[] args) throws JsonMappingException, JsonProcessingException, IOException, Exception {
+        System.out.println(new TikTokUserExtractor().getUserProfile("falloifjlsjdfkl"));    
     }
 
     @Override
@@ -113,25 +116,33 @@ public class TikTokUserExtractor extends AbstractProcessor {
     public void onTrigger(final ProcessContext context, final ProcessSession session) {
         FlowFile flowFile = session.get();
         String username;
-        if (flowFile == null && !context.getProperty(USERNAME).isSet()) return;
+                
+        if (flowFile == null){
+            if(!context.getProperty(USERNAME).isSet()) return;
+            flowFile = session.create();
+            flowFile = session.putAttribute(flowFile, "username", context.getProperty(USERNAME).getValue());
+        }
 
+        username = flowFile.getAttribute("username");
+        
+        if (username == null || username.isEmpty()) {
+            getLogger().error("No username specified and no 'username' attribute found on FlowFile");
+            session.transfer(flowFile, REL_FAILURE);
+            return;
+        }
+    
         try {
-            if (context.getProperty(USERNAME).isSet()) {
-                username = context.getProperty(USERNAME).getValue();
-            } else {
-                username = flowFile.getAttribute("username");
-                if (username == null || username.isEmpty()) {
-                    getLogger().error("No username specified and no 'username' attribute found on FlowFile");
-                    session.transfer(flowFile, REL_FAILURE);
-                    return;
-                }
-            }
-
             String userProfile = this.getUserProfile(username);
             
             session.transfer(
                 session.write(
-                    session.putAttribute(flowFile, "user_detail", userProfile), 
+                    session.putAttribute(
+                        session.putAttribute(
+                            flowFile, "user_detail", userProfile
+                        ), 
+                        "url", 
+                        String.format("https://www.tiktok.com/@%s", username)
+                    ), 
                     new OutputStreamCallback() {
                         @Override
                         public void process(OutputStream out) throws IOException {
@@ -147,20 +158,24 @@ public class TikTokUserExtractor extends AbstractProcessor {
         }
     }
 
-    private String parseData(String content) throws JsonMappingException, JsonProcessingException{
-        String jsonString = Jsoup
-            .parse(content)
-            .select("#__UNIVERSAL_DATA_FOR_REHYDRATION__")
-            .html();
-
-        return this.objectMapper
-            .readTree(jsonString)
+    private String parseData(String content) throws JsonMappingException, JsonProcessingException, Exception{
+        JsonNode jsonNode = this.objectMapper
+            .readTree(
+                Jsoup
+                    .parse(content)
+                    .select("#__UNIVERSAL_DATA_FOR_REHYDRATION__")
+                    .html()
+            )
             .get("__DEFAULT_SCOPE__")
-            .get("webapp.user-detail")
-            .toString();
-    }   
+            .get("webapp.user-detail");
+        
+        if(Integer.parseInt(jsonNode.get("statusCode").toString()) != 0) throw new Exception("user not found");
 
-    public String getUserProfile(String username) throws JsonMappingException, JsonProcessingException, IOException{
+    return jsonNode 
+            .toString();
+    }
+
+    public String getUserProfile(String username) throws JsonMappingException, JsonProcessingException, IOException, Exception{
         Response response = this.client
             .newCall(
                 new Request.Builder()
